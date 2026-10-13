@@ -137,11 +137,19 @@ void print_horizontal(char **names, int count, size_t max_len)
     putchar('\n');
 }
 
+int compare_names(const void *a, const void *b)
+{
+    const char *name_a = *(const char **)a;
+    const char *name_b = *(const char **)b;
+
+    return strcmp(name_a, name_b);
+}
+
 void do_ls(const char *dir, int display_mode)
 {
     DIR *dp = opendir(dir);
 
-    if (!dp)
+    if (dp == NULL)
     {
         perror(dir);
         return;
@@ -150,40 +158,20 @@ void do_ls(const char *dir, int display_mode)
     char **names = NULL;
     int count = 0;
     int capacity = 0;
-    size_t max_len = 0;
+    int max_len = 0;
     struct dirent *entry;
-
-    errno = 0;
 
     while ((entry = readdir(dp)) != NULL)
     {
         if (entry->d_name[0] == '.')
             continue;
 
-        if (display_mode == 1)
-        {
-            char path[PATH_MAX];
-            int length = snprintf(path, sizeof(path), "%s/%s",
-                                  dir, entry->d_name);
-
-            if (length < 0 || length >= (int)sizeof(path))
-            {
-                fprintf(stderr, "Path too long: %s/%s\n",
-                        dir, entry->d_name);
-                continue;
-            }
-
-            print_long(path, entry->d_name);
-            errno = 0;
-            continue;
-        }
-
         if (count == capacity)
         {
-            int new_capacity = capacity == 0 ? 16 : capacity * 2;
+            int new_capacity = (capacity == 0) ? 16 : capacity * 2;
             char **temp = realloc(names, new_capacity * sizeof(char *));
 
-            if (!temp)
+            if (temp == NULL)
             {
                 perror("realloc");
                 break;
@@ -195,30 +183,48 @@ void do_ls(const char *dir, int display_mode)
 
         names[count] = strdup(entry->d_name);
 
-        if (!names[count])
+        if (names[count] == NULL)
         {
             perror("strdup");
             break;
         }
 
-        size_t len = strlen(names[count]);
+        int length = (int)strlen(names[count]);
 
-        if (len > max_len)
-            max_len = len;
+        if (length > max_len)
+            max_len = length;
 
         count++;
-        errno = 0;
     }
-
-    if (errno != 0)
-        perror("readdir");
 
     closedir(dp);
 
-    if (display_mode == 2)
+    qsort(names, count, sizeof(char *), compare_names);
+
+    if (display_mode == 1)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            char path[PATH_MAX];
+            int length = snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+            if (length < 0 || length >= (int)sizeof(path))
+            {
+                fprintf(stderr, "Path too long: %s/%s\n", dir, names[i]);
+                continue;
+            }
+
+            print_long(path, names[i]);
+        }
+    }
+    else if (display_mode == 2)
+    {
         print_horizontal(names, count, max_len);
-    else if (display_mode == 0)
+    }
+    else
+    {
         print_columns(names, count, max_len);
+    }
 
     for (int i = 0; i < count; i++)
         free(names[i]);
