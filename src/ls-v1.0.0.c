@@ -12,7 +12,7 @@
 #include <time.h>
 #include <limits.h>
 
-void do_ls(const char *dir, int long_format);
+void do_ls(const char *dir, int display_mode);
 
 void permissions(mode_t mode, char *p)
 {
@@ -37,6 +37,7 @@ void permissions(mode_t mode, char *p)
 void print_long(const char *path, const char *name)
 {
     struct stat info;
+
     if (lstat(path, &info) == -1)
     {
         perror(path);
@@ -62,26 +63,27 @@ void print_long(const char *path, const char *name)
            (long long)info.st_size, date, name);
 }
 
+int terminal_width(void)
+{
+    struct winsize ws;
+
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return ws.ws_col;
+
+    return 80;
+}
+
 void print_columns(char **names, int count, size_t max_len)
 {
     if (count == 0)
         return;
 
-    struct winsize ws;
-    int width = 80;
-
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        width = ws.ws_col;
-
+    int width = terminal_width();
     int col_width = (int)max_len + 2;
-    if (col_width < 1)
-        col_width = 1;
 
     int columns = width / col_width;
-    if (columns < 1)
-        columns = 1;
-    if (columns > count)
-        columns = count;
+    if (columns < 1) columns = 1;
+    if (columns > count) columns = count;
 
     int rows = (count + columns - 1) / columns;
 
@@ -96,16 +98,49 @@ void print_columns(char **names, int count, size_t max_len)
                 printf("%s", names[index]);
 
                 if (col < columns - 1 && index + rows < count)
-                    printf("%*s", col_width - (int)strlen(names[index]), "");
+                    printf("%*s",
+                           col_width - (int)strlen(names[index]), "");
             }
         }
         putchar('\n');
     }
 }
 
-void do_ls(const char *dir, int long_format)
+void print_horizontal(char **names, int count, size_t max_len)
+{
+    if (count == 0)
+        return;
+
+    int width = terminal_width();
+    int col_width = (int)max_len + 2;
+    int line_pos = 0;
+
+    for (int i = 0; i < count; i++)
+    {
+        if (line_pos > 0 && line_pos + col_width > width)
+        {
+            putchar('\n');
+            line_pos = 0;
+        }
+
+        printf("%s", names[i]);
+        line_pos += (int)strlen(names[i]);
+
+        if (i < count - 1)
+        {
+            int spaces = col_width - (int)strlen(names[i]);
+            printf("%*s", spaces, "");
+            line_pos += spaces;
+        }
+    }
+
+    putchar('\n');
+}
+
+void do_ls(const char *dir, int display_mode)
 {
     DIR *dp = opendir(dir);
+
     if (!dp)
     {
         perror(dir);
@@ -125,12 +160,12 @@ void do_ls(const char *dir, int long_format)
         if (entry->d_name[0] == '.')
             continue;
 
-        if (long_format)
+        if (display_mode == 1)
         {
             char path[PATH_MAX];
-
             int length = snprintf(path, sizeof(path), "%s/%s",
                                   dir, entry->d_name);
+
             if (length < 0 || length >= (int)sizeof(path))
             {
                 fprintf(stderr, "Path too long: %s/%s\n",
@@ -159,6 +194,7 @@ void do_ls(const char *dir, int long_format)
         }
 
         names[count] = strdup(entry->d_name);
+
         if (!names[count])
         {
             perror("strdup");
@@ -166,6 +202,7 @@ void do_ls(const char *dir, int long_format)
         }
 
         size_t len = strlen(names[count]);
+
         if (len > max_len)
             max_len = len;
 
@@ -178,7 +215,9 @@ void do_ls(const char *dir, int long_format)
 
     closedir(dp);
 
-    if (!long_format)
+    if (display_mode == 2)
+        print_horizontal(names, count, max_len);
+    else if (display_mode == 0)
         print_columns(names, count, max_len);
 
     for (int i = 0; i < count; i++)
@@ -189,22 +228,25 @@ void do_ls(const char *dir, int long_format)
 
 int main(int argc, char *argv[])
 {
-    int long_format = 0;
+    int display_mode = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "l")) != -1)
+    while ((opt = getopt(argc, argv, "lx")) != -1)
     {
         if (opt == 'l')
-            long_format = 1;
+            display_mode = 1;
+        else if (opt == 'x')
+            display_mode = 2;
         else
         {
-            fprintf(stderr, "Usage: %s [-l] [directory ...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l | -x] [directory ...]\n",
+                    argv[0]);
             return 1;
         }
     }
 
     if (optind == argc)
-        do_ls(".", long_format);
+        do_ls(".", display_mode);
     else
     {
         for (int i = optind; i < argc; i++)
@@ -212,7 +254,7 @@ int main(int argc, char *argv[])
             if (argc - optind > 1)
                 printf("Directory listing of %s:\n", argv[i]);
 
-            do_ls(argv[i], long_format);
+            do_ls(argv[i], display_mode);
 
             if (i < argc - 1)
                 putchar('\n');
