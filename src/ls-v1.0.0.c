@@ -3,7 +3,6 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <string.h>
-#include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
@@ -19,7 +18,7 @@
 #define COLOR_PINK    "\033[1;35m"
 #define COLOR_REVERSE "\033[7m"
 
-void do_ls(const char *dir, int display_mode);
+void do_ls(const char *dir, int display_mode, int recursive_flag);
 
 void permissions(mode_t mode, char *p)
 {
@@ -39,10 +38,8 @@ void permissions(mode_t mode, char *p)
 
     if (mode & S_ISUID)
         p[3] = mode & S_IXUSR ? 's' : 'S';
-
     if (mode & S_ISGID)
         p[6] = mode & S_IXGRP ? 's' : 'S';
-
     if (mode & S_ISVTX)
         p[9] = mode & S_IXOTH ? 't' : 'T';
 
@@ -69,10 +66,8 @@ const char *get_file_color(const char *path, const char *name)
 
     if (S_ISLNK(info.st_mode))
         return COLOR_PINK;
-
     if (S_ISDIR(info.st_mode))
         return COLOR_BLUE;
-
     if (S_ISCHR(info.st_mode) || S_ISBLK(info.st_mode) ||
         S_ISFIFO(info.st_mode) || S_ISSOCK(info.st_mode))
         return COLOR_REVERSE;
@@ -102,7 +97,7 @@ void print_colored_name(const char *dir, const char *name)
 
     const char *color = get_file_color(path, name);
 
-    if (color != NULL)
+    if (color)
         printf("%s%s%s", color, name, COLOR_RESET);
     else
         printf("%s", name);
@@ -133,16 +128,14 @@ void print_long(const char *path, const char *name)
         strcpy(date, "unknown time");
 
     printf("%s %2lu %-8s %-8s %8lld %s ",
-           perm,
-           (unsigned long)info.st_nlink,
+           perm, (unsigned long)info.st_nlink,
            owner ? owner->pw_name : "?",
            group ? group->gr_name : "?",
-           (long long)info.st_size,
-           date);
+           (long long)info.st_size, date);
 
     const char *color = get_file_color(path, name);
 
-    if (color != NULL)
+    if (color)
         printf("%s%s%s", color, name, COLOR_RESET);
     else
         printf("%s", name);
@@ -169,12 +162,10 @@ void print_columns(const char *dir, char **names,
 
     int width = terminal_width();
     int col_width = (int)max_len + 2;
-
     int columns = width / col_width;
 
     if (columns < 1)
         columns = 1;
-
     if (columns > count)
         columns = count;
 
@@ -194,12 +185,10 @@ void print_columns(const char *dir, char **names,
                 {
                     int spaces =
                         col_width - (int)strlen(names[index]);
-
                     printf("%*s", spaces, "");
                 }
             }
         }
-
         putchar('\n');
     }
 }
@@ -223,13 +212,11 @@ void print_horizontal(const char *dir, char **names,
         }
 
         print_colored_name(dir, names[i]);
-
         line_pos += (int)strlen(names[i]);
 
         if (i < count - 1)
         {
             int spaces = col_width - (int)strlen(names[i]);
-
             printf("%*s", spaces, "");
             line_pos += spaces;
         }
@@ -246,7 +233,7 @@ int compare_names(const void *a, const void *b)
     return strcmp(name_a, name_b);
 }
 
-void do_ls(const char *dir, int display_mode)
+void do_ls(const char *dir, int display_mode, int recursive_flag)
 {
     DIR *dp = opendir(dir);
 
@@ -255,6 +242,9 @@ void do_ls(const char *dir, int display_mode)
         perror(dir);
         return;
     }
+
+    if (recursive_flag)
+        printf("%s:\n", dir);
 
     char **names = NULL;
     int count = 0;
@@ -269,11 +259,9 @@ void do_ls(const char *dir, int display_mode)
 
         if (count == capacity)
         {
-            int new_capacity =
-                (capacity == 0) ? 16 : capacity * 2;
-
-            char **temp = realloc(
-                names, new_capacity * sizeof(char *));
+            int new_capacity = capacity == 0 ? 16 : capacity * 2;
+            char **temp = realloc(names,
+                                  new_capacity * sizeof(char *));
 
             if (temp == NULL)
             {
@@ -294,7 +282,6 @@ void do_ls(const char *dir, int display_mode)
         }
 
         int length = (int)strlen(names[count]);
-
         if (length > max_len)
             max_len = length;
 
@@ -311,9 +298,8 @@ void do_ls(const char *dir, int display_mode)
         for (int i = 0; i < count; i++)
         {
             char path[PATH_MAX];
-
-            int length = snprintf(
-                path, sizeof(path), "%s/%s", dir, names[i]);
+            int length = snprintf(path, sizeof(path),
+                                  "%s/%s", dir, names[i]);
 
             if (length < 0 || length >= (int)sizeof(path))
             {
@@ -334,6 +320,27 @@ void do_ls(const char *dir, int display_mode)
         print_columns(dir, names, count, (size_t)max_len);
     }
 
+    if (recursive_flag)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            char path[PATH_MAX];
+            struct stat info;
+
+            int length = snprintf(path, sizeof(path),
+                                  "%s/%s", dir, names[i]);
+
+            if (length < 0 || length >= (int)sizeof(path))
+                continue;
+
+            if (lstat(path, &info) == 0 && S_ISDIR(info.st_mode))
+            {
+                putchar('\n');
+                do_ls(path, display_mode, recursive_flag);
+            }
+        }
+    }
+
     for (int i = 0; i < count; i++)
         free(names[i]);
 
@@ -343,18 +350,21 @@ void do_ls(const char *dir, int display_mode)
 int main(int argc, char *argv[])
 {
     int display_mode = 0;
+    int recursive_flag = 0;
     int opt;
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    while ((opt = getopt(argc, argv, "lxR")) != -1)
     {
         if (opt == 'l')
             display_mode = 1;
         else if (opt == 'x')
             display_mode = 2;
+        else if (opt == 'R')
+            recursive_flag = 1;
         else
         {
             fprintf(stderr,
-                    "Usage: %s [-l | -x] [directory ...]\n",
+                    "Usage: %s [-l | -x] [-R] [directory ...]\n",
                     argv[0]);
             return 1;
         }
@@ -362,18 +372,18 @@ int main(int argc, char *argv[])
 
     if (optind == argc)
     {
-        do_ls(".", display_mode);
+        do_ls(".", display_mode, recursive_flag);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
-            if (argc - optind > 1)
+            if (!recursive_flag && argc - optind > 1)
                 printf("Directory listing of %s:\n", argv[i]);
 
-            do_ls(argv[i], display_mode);
+            do_ls(argv[i], display_mode, recursive_flag);
 
-            if (i < argc - 1)
+            if (!recursive_flag && i < argc - 1)
                 putchar('\n');
         }
     }
