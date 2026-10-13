@@ -12,6 +12,13 @@
 #include <time.h>
 #include <limits.h>
 
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[1;34m"
+#define COLOR_GREEN   "\033[1;32m"
+#define COLOR_RED     "\033[1;31m"
+#define COLOR_PINK    "\033[1;35m"
+#define COLOR_REVERSE "\033[7m"
+
 void do_ls(const char *dir, int display_mode);
 
 void permissions(mode_t mode, char *p)
@@ -19,6 +26,7 @@ void permissions(mode_t mode, char *p)
     p[0] = S_ISDIR(mode) ? 'd' : S_ISLNK(mode) ? 'l' :
            S_ISCHR(mode) ? 'c' : S_ISBLK(mode) ? 'b' :
            S_ISFIFO(mode) ? 'p' : S_ISSOCK(mode) ? 's' : '-';
+
     p[1] = mode & S_IRUSR ? 'r' : '-';
     p[2] = mode & S_IWUSR ? 'w' : '-';
     p[3] = mode & S_IXUSR ? 'x' : '-';
@@ -28,10 +36,76 @@ void permissions(mode_t mode, char *p)
     p[7] = mode & S_IROTH ? 'r' : '-';
     p[8] = mode & S_IWOTH ? 'w' : '-';
     p[9] = mode & S_IXOTH ? 'x' : '-';
-    if (mode & S_ISUID) p[3] = mode & S_IXUSR ? 's' : 'S';
-    if (mode & S_ISGID) p[6] = mode & S_IXGRP ? 's' : 'S';
-    if (mode & S_ISVTX) p[9] = mode & S_IXOTH ? 't' : 'T';
+
+    if (mode & S_ISUID)
+        p[3] = mode & S_IXUSR ? 's' : 'S';
+
+    if (mode & S_ISGID)
+        p[6] = mode & S_IXGRP ? 's' : 'S';
+
+    if (mode & S_ISVTX)
+        p[9] = mode & S_IXOTH ? 't' : 'T';
+
     p[10] = '\0';
+}
+
+int has_suffix(const char *name, const char *suffix)
+{
+    size_t name_len = strlen(name);
+    size_t suffix_len = strlen(suffix);
+
+    if (name_len < suffix_len)
+        return 0;
+
+    return strcmp(name + name_len - suffix_len, suffix) == 0;
+}
+
+const char *get_file_color(const char *path, const char *name)
+{
+    struct stat info;
+
+    if (lstat(path, &info) == -1)
+        return NULL;
+
+    if (S_ISLNK(info.st_mode))
+        return COLOR_PINK;
+
+    if (S_ISDIR(info.st_mode))
+        return COLOR_BLUE;
+
+    if (S_ISCHR(info.st_mode) || S_ISBLK(info.st_mode) ||
+        S_ISFIFO(info.st_mode) || S_ISSOCK(info.st_mode))
+        return COLOR_REVERSE;
+
+    if (has_suffix(name, ".tar") ||
+        has_suffix(name, ".gz") ||
+        has_suffix(name, ".zip"))
+        return COLOR_RED;
+
+    if (info.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+        return COLOR_GREEN;
+
+    return NULL;
+}
+
+void print_colored_name(const char *dir, const char *name)
+{
+    char path[PATH_MAX];
+
+    int length = snprintf(path, sizeof(path), "%s/%s", dir, name);
+
+    if (length < 0 || length >= (int)sizeof(path))
+    {
+        printf("%s", name);
+        return;
+    }
+
+    const char *color = get_file_color(path, name);
+
+    if (color != NULL)
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
 }
 
 void print_long(const char *path, const char *name)
@@ -44,7 +118,9 @@ void print_long(const char *path, const char *name)
         return;
     }
 
-    char perm[11], date[20];
+    char perm[11];
+    char date[20];
+
     permissions(info.st_mode, perm);
 
     struct passwd *owner = getpwuid(info.st_uid);
@@ -56,24 +132,37 @@ void print_long(const char *path, const char *name)
     else
         strcpy(date, "unknown time");
 
-    printf("%s %2lu %-8s %-8s %8lld %s %s\n",
-           perm, (unsigned long)info.st_nlink,
+    printf("%s %2lu %-8s %-8s %8lld %s ",
+           perm,
+           (unsigned long)info.st_nlink,
            owner ? owner->pw_name : "?",
            group ? group->gr_name : "?",
-           (long long)info.st_size, date, name);
+           (long long)info.st_size,
+           date);
+
+    const char *color = get_file_color(path, name);
+
+    if (color != NULL)
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
+
+    putchar('\n');
 }
 
 int terminal_width(void)
 {
     struct winsize ws;
 
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 &&
+        ws.ws_col > 0)
         return ws.ws_col;
 
     return 80;
 }
 
-void print_columns(char **names, int count, size_t max_len)
+void print_columns(const char *dir, char **names,
+                   int count, size_t max_len)
 {
     if (count == 0)
         return;
@@ -82,8 +171,12 @@ void print_columns(char **names, int count, size_t max_len)
     int col_width = (int)max_len + 2;
 
     int columns = width / col_width;
-    if (columns < 1) columns = 1;
-    if (columns > count) columns = count;
+
+    if (columns < 1)
+        columns = 1;
+
+    if (columns > count)
+        columns = count;
 
     int rows = (count + columns - 1) / columns;
 
@@ -95,18 +188,24 @@ void print_columns(char **names, int count, size_t max_len)
 
             if (index < count)
             {
-                printf("%s", names[index]);
+                print_colored_name(dir, names[index]);
 
                 if (col < columns - 1 && index + rows < count)
-                    printf("%*s",
-                           col_width - (int)strlen(names[index]), "");
+                {
+                    int spaces =
+                        col_width - (int)strlen(names[index]);
+
+                    printf("%*s", spaces, "");
+                }
             }
         }
+
         putchar('\n');
     }
 }
 
-void print_horizontal(char **names, int count, size_t max_len)
+void print_horizontal(const char *dir, char **names,
+                      int count, size_t max_len)
 {
     if (count == 0)
         return;
@@ -123,12 +222,14 @@ void print_horizontal(char **names, int count, size_t max_len)
             line_pos = 0;
         }
 
-        printf("%s", names[i]);
+        print_colored_name(dir, names[i]);
+
         line_pos += (int)strlen(names[i]);
 
         if (i < count - 1)
         {
             int spaces = col_width - (int)strlen(names[i]);
+
             printf("%*s", spaces, "");
             line_pos += spaces;
         }
@@ -168,8 +269,11 @@ void do_ls(const char *dir, int display_mode)
 
         if (count == capacity)
         {
-            int new_capacity = (capacity == 0) ? 16 : capacity * 2;
-            char **temp = realloc(names, new_capacity * sizeof(char *));
+            int new_capacity =
+                (capacity == 0) ? 16 : capacity * 2;
+
+            char **temp = realloc(
+                names, new_capacity * sizeof(char *));
 
             if (temp == NULL)
             {
@@ -199,18 +303,22 @@ void do_ls(const char *dir, int display_mode)
 
     closedir(dp);
 
-    qsort(names, count, sizeof(char *), compare_names);
+    if (count > 1)
+        qsort(names, count, sizeof(char *), compare_names);
 
     if (display_mode == 1)
     {
         for (int i = 0; i < count; i++)
         {
             char path[PATH_MAX];
-            int length = snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+            int length = snprintf(
+                path, sizeof(path), "%s/%s", dir, names[i]);
 
             if (length < 0 || length >= (int)sizeof(path))
             {
-                fprintf(stderr, "Path too long: %s/%s\n", dir, names[i]);
+                fprintf(stderr, "Path too long: %s/%s\n",
+                        dir, names[i]);
                 continue;
             }
 
@@ -219,11 +327,11 @@ void do_ls(const char *dir, int display_mode)
     }
     else if (display_mode == 2)
     {
-        print_horizontal(names, count, max_len);
+        print_horizontal(dir, names, count, (size_t)max_len);
     }
     else
     {
-        print_columns(names, count, max_len);
+        print_columns(dir, names, count, (size_t)max_len);
     }
 
     for (int i = 0; i < count; i++)
@@ -245,14 +353,17 @@ int main(int argc, char *argv[])
             display_mode = 2;
         else
         {
-            fprintf(stderr, "Usage: %s [-l | -x] [directory ...]\n",
+            fprintf(stderr,
+                    "Usage: %s [-l | -x] [directory ...]\n",
                     argv[0]);
             return 1;
         }
     }
 
     if (optind == argc)
+    {
         do_ls(".", display_mode);
+    }
     else
     {
         for (int i = optind; i < argc; i++)
